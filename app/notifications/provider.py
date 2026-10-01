@@ -10,11 +10,16 @@ class ProviderError(Exception):
 
 
 class ProviderClient:
-    def __init__(self, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 5.0,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._client = httpx.AsyncClient(
             base_url=settings.provider_base_url,
             headers={"X-API-Key": settings.provider_api_key},
             timeout=timeout,
+            transport=transport,
         )
 
     async def notify(self, to: str, message: str, type: str) -> str:
