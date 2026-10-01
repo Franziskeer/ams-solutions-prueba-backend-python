@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 from tenacity import (
@@ -202,6 +204,33 @@ async def test_deliver_fails_after_retry_attempts_are_exhausted():
 
     assert delivered.status == NotificationStatus.FAILED
     assert len(calls) == attempts
+
+
+@pytest.mark.anyio
+async def test_concurrent_deliveries_call_provider_once_each():
+    calls: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        await asyncio.sleep(0.01)
+        return httpx.Response(200, json={"status": "delivered", "provider_id": "p-1"})
+
+    service = NotificationService(
+        NotificationRepository(),
+        ProviderClient(transport=httpx.MockTransport(handler)),
+        DeliveryQueue(),
+        retrying=_fast_retrying(),
+    )
+    created = [service.create("user@example.com", "hola", "email") for _ in range(5)]
+    for notification in created:
+        service.accept(notification.id)
+
+    delivered = await asyncio.gather(*(service.deliver(n.id) for n in created))
+
+    assert all(n.status == NotificationStatus.SENT for n in delivered)
+    assert sorted(r.url.params["trace_id"] for r in calls) == sorted(
+        n.id for n in created
+    )
 
 
 @pytest.mark.anyio
