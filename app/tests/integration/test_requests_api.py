@@ -4,6 +4,7 @@ import pytest
 from main import app
 from notifications.dependencies import get_notification_service
 from notifications.models import NotificationStatus
+from notifications.provider import ProviderClient
 from notifications.repository import NotificationRepository
 from notifications.service import NotificationService
 
@@ -15,10 +16,15 @@ VALID_BODY = {"to": "user@example.com", "message": "hola", "type": "email"}
 @pytest.fixture
 def repository():
     repository = NotificationRepository()
-    app.dependency_overrides[get_notification_service] = lambda: NotificationService(repository)
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1"}
+        )
+    )
+    service = NotificationService(repository, ProviderClient(transport=transport))
+    app.dependency_overrides[get_notification_service] = lambda: service
     yield repository
     app.dependency_overrides.clear()
-
 
 @pytest.fixture
 async def client():

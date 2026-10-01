@@ -1,6 +1,7 @@
 from uuid import uuid4
 
-from notifications.models import Notification, NotificationType
+from notifications.models import Notification, NotificationStatus, NotificationType
+from notifications.provider import ProviderClient
 from notifications.repository import NotificationRepository
 
 
@@ -11,8 +12,11 @@ class NotificationNotFound(Exception):
 
 
 class NotificationService:
-    def __init__(self, repository: NotificationRepository) -> None:
+    def __init__(
+        self, repository: NotificationRepository, provider: ProviderClient
+    ) -> None:
         self._repository = repository
+        self._provider = provider
 
     def create(self, to: str, message: str, type: NotificationType) -> Notification:
         notification = Notification(id=str(uuid4()), to=to, message=message, type=type)
@@ -23,4 +27,13 @@ class NotificationService:
         notification = self._repository.get(request_id)
         if notification is None:
             raise NotificationNotFound(request_id=request_id)
+        return notification
+
+    async def process(self, request_id: str) -> Notification:
+        notification = self.get(request_id)
+        notification.status = NotificationStatus.PROCESSING
+        await self._provider.notify(
+            notification.to, notification.message, notification.type
+        )
+        notification.status = NotificationStatus.SENT
         return notification

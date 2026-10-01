@@ -33,9 +33,8 @@ async def create_request(
 
 
 @router.post("/{request_id}/process", status_code=status.HTTP_202_ACCEPTED)
-async def process_request(request_id: str) -> dict:
-    return {}
-
+async def process_request(request_id: str, service: Service) -> None:
+    await service.process(request_id)
 
 @router.get(
     "/{request_id}",
