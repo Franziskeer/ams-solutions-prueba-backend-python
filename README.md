@@ -30,6 +30,14 @@ docker-compose run --rm load-test
 
 Los resultados se ven en [Grafana](http://localhost:3000/d/backend-performance-scorecard/).
 
+### Resultados del test de carga
+
+Con el pipeline actual (cola + workers, reintentos y rate limit), una pasada de k6 (hasta 200 VUs, ~40 s) dejó los checks al 100 % y `http_req_failed` al 0 %. La latencia media de la API fue de unos 2–3 ms: `POST /process` responde `202` sin esperar al proveedor.
+
+Eso no implica que todas las notificaciones estén en `sent` al terminar k6. El proveedor admite ~5 llamadas por segundo; k6 encola mucho más rápido. Al acabar la prueba la mayoría sigue en `processing` en la cola, y eso es correcto: el check de k6 solo exige un estado válido. Los logs del proveedor en esa pasada no mostraron `429` de saturación (sí algunos `500` aleatorios), coherente con el rate limit propio.
+
+Limitaciones asumidas: la cola y el almacén viven en memoria (se pierden al reiniciar); con más carga o varios procesos de uvicorn haría falta una cola compartida (Redis o un broker) y, si se quiere proteger la API, limitar la cola y responder `503` cuando esté llena.
+
 **NOTA:** Para agilizar el desarrollo y no tener que hacer rebuild de la aplicación constantemente he usado un entorno virtual de Python para tener levantado el servicio de uvicorn constantemente y aprovechar el hot reloading. El resto de servicios se manejan de la misma forma con Docker, pero el app lo lanzo en modo desarrollo así:
 
 ```bash
