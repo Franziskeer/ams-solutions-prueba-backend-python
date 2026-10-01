@@ -92,6 +92,9 @@ class NotificationService:
                 exc,
                 exc.status_code,
             )
+        except Exception:
+            notification.status = NotificationStatus.FAILED
+            logger.exception("Notification %s failed unexpectedly", request_id)
         return notification
 
     def process(self, request_id: str) -> Notification:
