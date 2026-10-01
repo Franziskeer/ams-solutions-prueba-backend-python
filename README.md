@@ -84,12 +84,27 @@ El código se agrupa por dominio y no por capas. Todo lo que tiene que ver con l
 
 `schemas.py` y `models.py` están separados a propósito: los esquemas son el contrato HTTP, validado por Pydantic, y los modelos son lo que la app guarda. Así el estado interno de una solicitud puede cambiar sin tocar el contrato.
 
-### Registro de solicitudes
+### Ciclo de vida de una solicitud
 
-- `POST /v1/requests` valida el cuerpo, crea la solicitud con un `id` `uuid4` y estado `queued`, y responde `201` con `{"id": "..."}`. Un cuerpo inválido, por ejemplo un `type` que no sea `email`, `sms` o `push`, devuelve `422` sin llegar al servicio.
-- El router recibe el servicio con `Depends(get_notification_service)`. El repositorio se crea una sola vez en `dependencies.py` y lo comparten todas las peticiones, de modo que lo que guarda un `POST` lo encuentra después el `GET`.
-- El almacén es un diccionario en memoria. Basta porque el Dockerfile arranca un solo proceso de uvicorn; con varios workers, cada uno tendría su propio diccionario. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
-- No hay locks: en asyncio, una operación sin `await` entre leer y escribir el diccionario no puede quedar interrumpida por otra petición.
+El contrato separa registrar una notificación (`POST /v1/requests`) de enviarla (`POST /v1/requests/{id}/process`), y el envío depende de un proveedor lento que falla al azar, tarda entre 0,1 y 0,5 segundos, devuelve un 500 en el 10 % de las llamadas y un 429 por encima de 50 peticiones cada 10 segundos. El cliente no puede esperar en la misma petición a que la notificación salga, así que consulta cómo va con `GET /v1/requests/{id}`.
+
+Por eso cada solicitud es una pequeña máquina de estados en lugar de un simple registro. Así el cliente sabe en todo momento si su notificación está pendiente, en curso, enviada o perdida, aunque el proveedor falle. Las transiciones solo avanzan, de modo que una solicitud enviada no vuelve a procesarse, algo importante porque el proveedor no ofrece idempotencia y procesarla dos veces mandaría dos notificaciones. Y un error del proveedor que no se recupera deja la solicitud en `failed`, en lugar de perderse o devolver un 500 al cliente.
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: POST /v1/requests
+    queued --> processing: POST /v1/requests/{id}/process
+    processing --> sent: el proveedor responde 200
+    processing --> failed: error no recuperable o reintentos agotados
+    sent --> [*]
+    failed --> [*]
+```
+
+Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro ya crea las solicitudes en `queued`; el resto de transiciones llegan con el procesamiento.
+
+### Almacén de solicitudes
+
+Las solicitudes se guardan en un diccionario en memoria, detrás de `repository.py`. Basta porque el Dockerfile arranca un solo proceso de uvicorn: con varios workers, cada uno tendría su propio diccionario y un `GET` podría no encontrar una solicitud creada en otro. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
 
 ### Configuración
 
