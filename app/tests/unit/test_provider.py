@@ -75,6 +75,35 @@ async def test_raises_provider_error_without_status_code_on_transport_error(
     assert exc_info.value.status_code is None
 
 
+async def test_notify_acquires_rate_limiter_before_calling_provider():
+    acquires = 0
+
+    class RecordingLimiter:
+        async def acquire(self) -> None:
+            nonlocal acquires
+            acquires += 1
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1234"}
+        )
+
+    client = ProviderClient(
+        transport=httpx.MockTransport(handler),
+        rate_limiter=RecordingLimiter(),
+    )
+    try:
+        await client.notify("user@example.com", "hola", "email")
+    finally:
+        await client.aclose()
+
+    assert acquires == 1
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     ("status_code", "retryable"),
     [(None, True), (429, True), (500, True), (401, False)],
