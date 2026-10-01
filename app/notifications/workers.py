@@ -24,7 +24,12 @@ class DeliveryWorkers:
         while True:
             request_id = await self._queue.get()
             try:
-                await self._service.deliver(request_id)
+                notification = await self._service.deliver(request_id)
+                logger.info(
+                    "Worker finished notification %s with status %s",
+                    request_id,
+                    notification.status,
+                )
             except Exception:
                 logger.exception("Error delivering notification %s", request_id)
             finally:
