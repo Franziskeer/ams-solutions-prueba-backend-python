@@ -33,17 +33,29 @@ Los resultados se ven en [Grafana](http://localhost:3000/d/backend-performance-s
 **NOTA:** Para agilizar el desarrollo y no tener que hacer rebuild de la aplicación constantemente he usado un entorno virtual de Python para tener levantado el servicio de uvicorn constantemente y aprovechar el hot reloading. El resto de servicios se manejan de la misma forma con Docker, pero el app lo lanzo en modo desarrollo así:
 
 ```bash
+cd app
 py -3.12 -m venv .venv
 source .venv/Scripts/activate
-cd app
+pip install -r requirements.txt # o requirements-dev.txt para modo desarrollo
 uvicorn main:app --reload --port 5001
 ```
 
 El puerto 5001 evita chocar con el 5000, que publica el contenedor del proveedor para la aplicación dockerizada y que es el que usa el test de carga.
 
+### Tests
+
+Desde `app/`, con el entorno virtual podemos lanzar los tests con el comando `pytest` (siempre y cuando tengamos instalada la dependencia).
+
+Los tests viven en `app/tests/`, junto al código que prueban, para que la solución quede entera dentro de `app/`. `app/.dockerignore` excluye de la imagen de Docker `tests/`, `pytest.ini`, `requirements-dev.txt` y el entorno virtual `.venv/`.
+
+- `tests/conftest.py` es común a todas las subcarpetas.
+- `tests/unit/` prueba cada pieza aislada. No necesita el proveedor levantado: sus respuestas se simulan con `httpx.MockTransport`.
+
+Cada carpeta de tests lleva un `__init__.py` vacío para que pytest las importe como paquetes y se puedan repetir nombres de fichero entre `unit/` y otras subcarpetas.
+
 ## Decisiones de diseño
 
-### Estructura por dominio
+### Estructura de carpetas
 
 ```text
 app/
@@ -52,6 +64,9 @@ app/
   notifications/
     router.py           # endpoints de /v1/requests
     provider.py         # cliente del proveedor externo
+  tests/                # tests con pytest, excluidos de la imagen
+    conftest.py
+    unit/
 ```
 
 El código se agrupa por dominio y no por capas. Todo lo que tiene que ver con las notificaciones vive junto, y un dominio nuevo sería otra carpeta al mismo nivel.
