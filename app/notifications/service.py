@@ -72,7 +72,9 @@ class NotificationService:
     async def deliver(self, request_id: str) -> Notification:
         notification = self.get(request_id)
         try:
-            async for attempt in self._retrying:
+            # AsyncRetrying keeps the retry state on the instance, so concurrent
+            # deliveries must not iterate the same one.
+            async for attempt in self._retrying.copy():
                 with attempt:
                     logger.info(
                         "Delivering notification %s (attempt %s)",
