@@ -1,6 +1,6 @@
 import httpx
-
 from config import settings
+from notifications.rate_limiter import RateLimiter
 
 
 class ProviderError(Exception):
@@ -22,6 +22,7 @@ class ProviderClient:
         self,
         timeout: float = 5.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        rate_limiter: RateLimiter | None = None,
     ) -> None:
         self._client = httpx.AsyncClient(
             base_url=settings.provider_base_url,
@@ -29,8 +30,12 @@ class ProviderClient:
             timeout=timeout,
             transport=transport,
         )
+        self._limiter = rate_limiter
 
     async def notify(self, to: str, message: str, type: str) -> str:
+        if self._limiter is not None:
+            await self._limiter.acquire()
+
         try:
             response = await self._client.post(
                 "/v1/notify",
