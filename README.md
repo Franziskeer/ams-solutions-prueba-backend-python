@@ -82,7 +82,7 @@ app/
 
 El código se agrupa por dominio y no por capas. Todo lo que tiene que ver con las notificaciones vive junto, y un dominio nuevo sería otra carpeta al mismo nivel.
 
-`schemas.py` y `models.py` están separados a propósito: los esquemas son el contrato HTTP, validado por Pydantic, y los modelos son lo que la app guarda. Así el estado interno de una solicitud puede cambiar sin tocar el contrato.
+`schemas.py` y `models.py` están separados a propósito: los esquemas son el contrato HTTP, validado por Pydantic, y los modelos son lo que la app guarda. Así el estado interno de una solicitud puede cambiar sin tocar el contrato. Los esquemas de entrada acaban en `Request` y los de salida en `Response`, con un prefijo que dice qué contienen: `NotificationCreatedResponse` o `NotificationStatusResponse`.
 
 ### Ciclo de vida de una solicitud
 
@@ -105,6 +105,12 @@ Los valores los fija el enunciado; la semántica y las transiciones son decisió
 ### Almacén de solicitudes
 
 Las solicitudes se guardan en un diccionario en memoria, detrás de `repository.py`. Basta porque el Dockerfile arranca un solo proceso de uvicorn: con varios workers, cada uno tendría su propio diccionario y un `GET` podría no encontrar una solicitud creada en otro. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
+
+El almacén tampoco sobrevive a un reinicio: al parar la app, o al recargar uvicorn en desarrollo, se pierden todas las solicitudes. Es un compromiso asumido para la prueba, en la que cada ejecución de k6 crea sus propias solicitudes y no necesita las anteriores. Un almacén persistente lo resolvería con el mismo cambio de `repository.py`.
+
+### Errores del dominio y códigos HTTP
+
+Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque varios endpoints buscan por `id`: el `GET` ya lo hace y `process` lo hará. Así cada endpoint se queda en llamar al servicio y devolver el resultado, y los errores que vengan después, como intentar procesar una solicitud ya enviada, seguirán el mismo camino.
 
 ### Configuración
 
