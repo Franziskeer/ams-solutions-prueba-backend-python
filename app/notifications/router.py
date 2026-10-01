@@ -8,7 +8,11 @@ from notifications.schemas import (
     NotificationRequest,
     NotificationStatusResponse,
 )
-from notifications.service import NotificationNotFound, NotificationService
+from notifications.service import (
+    NotificationNotFound,
+    NotificationNotProcessable,
+    NotificationService,
+)
 
 router = APIRouter(prefix="/requests", tags=["Notifications Requests"])
 
@@ -24,6 +28,15 @@ async def notification_not_found_handler(
     )
 
 
+async def notification_not_processable_handler(
+    request: Request, exc: NotificationNotProcessable
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": f"Request {exc.request_id} is not processable"},
+    )
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_request(
     body: NotificationRequest, service: Service
@@ -32,9 +45,17 @@ async def create_request(
     return NotificationCreatedResponse(id=notification.id)
 
 
-@router.post("/{request_id}/process", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{request_id}/process",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "Request not found"},
+        status.HTTP_409_CONFLICT: {"description": "Request is not processable"},
+    },
+)
 async def process_request(request_id: str, service: Service) -> None:
     await service.process(request_id)
+
 
 @router.get(
     "/{request_id}",
