@@ -67,7 +67,7 @@ No había implementado antes un sistema con reintentos ni con rate limiting, y m
 - El test de carga sube hasta 200 usuarios virtuales que crean y procesan solicitudes sin parar, lo que supone del orden de un centenar de solicitudes por segundo.
 - El proveedor solo acepta 50 llamadas cada 10 segundos, unas 5 por segundo, tarda entre 0,1 y 0,5 segundos en responder y falla al azar en un 10% de las llamadas.
 
-La conclusión fue que es imposible enviarlo todo mientras dura la prueba, y que no tenía sentido intentarlo. Lo que sí podía controlar era que mi API respondiera rápido y sin errores pasara lo que pasara con el proveedor, que no se perdiera ninguna notificación por un fallo pasajero y que no se enviara ninguna dos veces. A partir de ahí ordené el trabajo por impacto, en hitos pequeños con su propio pull request:
+La conclusión fue que es imposible enviarlo todo mientras dura la prueba, y que no tenía sentido intentarlo. Lo que sí podía controlar era que mi API respondiera rápido y sin errores pasara lo que pasara con el proveedor, que no se perdiera ninguna notificación por un fallo pasajero y que procesar dos veces la misma solicitud no la enviara dos veces. A partir de ahí ordené el trabajo por impacto, en hitos pequeños con su propio pull request:
 
 1. Desacoplar el envío de la petición HTTP, que era lo que más afectaba a la latencia y a los errores bajo carga.
 2. Reintentar los fallos recuperables del proveedor en lugar de darlos por perdidos.
@@ -131,7 +131,7 @@ stateDiagram-v2
 - `processing` significa que se ha aceptado para envío, aunque todavía esté esperando su turno. Decidí marcarla así en el momento de aceptarla, y no cuando un worker la recoge, para que una segunda petición de procesado sobre el mismo identificador se rechace de inmediato.
 - `sent` y `failed` son estados finales según el valor estado devuelto por el proveedor.
 
-Las transiciones solo avanzan. Me pareció la decisión más importante del diseño, porque el proveedor no ofrece idempotencia, es decir, si una solicitud se procesara dos veces el destinatario recibiría dos notificaciones. Intentar procesar algo que no está en `queued` devuelve un `409 Conflict`. Y un fallo definitivo del proveedor deja la solicitud en `failed` en lugar de perderse o convertirse en un error 500 de mi API.
+Las transiciones solo avanzan. Me pareció la decisión más importante del diseño, porque el proveedor no ofrece idempotencia, es decir, si una solicitud se procesara dos veces el destinatario recibiría dos notificaciones. Intentar procesar algo que no está en `queued` devuelve un `409 Conflict`. El endpoint de procesado es asíncrono y la comprobación y el cambio de estado ocurren sin ningún `await` entre medias, así que dos peticiones simultáneas sobre el mismo identificador no pueden pasar ambas la comprobación: una recibe `202` y la otra `409`. Y un fallo definitivo del proveedor deja la solicitud en `failed` en lugar de perderse o convertirse en un error 500 de mi API.
 
 ### Envío en segundo plano
 
@@ -144,7 +144,7 @@ Así que partí el procesamiento en dos momentos:
 
 Para los workers valoré usar un broker de mensajes o un proceso aparte, pero me pareció una complejidad que esta prueba no justificaba. Opté por tareas asíncronas dentro del mismo proceso, que arrancan y paran junto con la aplicación. Como casi todo el trabajo es esperar a la red, la concurrencia asíncrona encaja bien ya que mientras un worker espera al proveedor, la aplicación sigue atendiendo peticiones y los demás workers siguen trabajando.
 
-Un worker nunca debe morir. Si algo inesperado falla al entregar una solicitud, el error se registra y el worker pasa a la siguiente. Me pareció la forma más directa de responder a la "robustez frente a errores inesperados" que menciona el enunciado. Un fallo puntual no puede dejar de procesar todo lo que viene detrás.
+Un worker nunca debe morir. Si algo inesperado falla al entregar una solicitud, el error se registra, la solicitud queda en `failed` para que no se quede en `processing` indefinidamente, y el worker pasa a la siguiente. Me pareció la forma más directa de responder a la "robustez frente a errores inesperados" que menciona el enunciado. Un fallo puntual no puede dejar de procesar todo lo que viene detrás.
 
 ### Reintentos ante errores del proveedor
 
@@ -152,7 +152,9 @@ Con el envío ya en segundo plano, el siguiente problema era que muchas notifica
 
 Lo primero fue decidir qué errores merece la pena reintentar y cuáles no. Los errores de red, los timeouts, los errores 5xx y el 429 son, por naturaleza, pasajeros. En cambio, un 401 indica que la API key está mal, y repetir la llamada solo añadiría carga sin ninguna posibilidad de éxito. Esa clasificación la expone el cliente del proveedor, que es quien entiende sus códigos, pero la decisión de reintentar la toma el servicio, porque forma parte de cómo se orquesta una entrega y no de cómo se habla HTTP.
 
-Para la política de espera me documenté sobre las prácticas habituales y opté por backoff exponencial con jitter: cada reintento espera más que el anterior, con un componente aleatorio. El backoff da tiempo al proveedor a recuperarse en lugar de insistir de inmediato, y el jitter evita que todos los workers que fallaron a la vez vuelvan a llamar exactamente al mismo tiempo y provoquen otro pico. En lugar de implementarlo a mano usé `tenacity`, una librería madura y muy usada para esto cuya, porque escribir lógica de reintentos propia es fácil de hacer mal y difícil de probar. Además, ya venía instalada en las dependencias del proyecto, lo cual me dió la pista para usarla. Los intentos están acotados: si se agotan, la solicitud queda en `failed` y el worker queda libre para otra.
+Para la política de espera me documenté sobre las prácticas habituales y opté por backoff exponencial con jitter: cada reintento espera más que el anterior, con un componente aleatorio. El backoff da tiempo al proveedor a recuperarse en lugar de insistir de inmediato, y el jitter evita que todos los workers que fallaron a la vez vuelvan a llamar exactamente al mismo tiempo y provoquen otro pico. En lugar de implementarlo a mano usé `tenacity`, una librería madura y muy usada para esto, porque escribir lógica de reintentos propia es fácil de hacer mal y difícil de probar. Además, ya venía instalada en las dependencias del proyecto, lo cual me dio la pista para usarla. Los intentos están acotados: si se agotan, la solicitud queda en `failed` y el worker queda libre para otra.
+
+Reintentar tiene un coste que conviene tener presente. Ante un timeout o un error de red no se sabe si el proveedor llegó a entregar la notificación, y si la entregó, el reintento la duplica. Lo acepté porque perder notificaciones me parece peor que duplicar alguna en un caso raro, pero para mitigarlo envío el id de la solicitud como `trace_id` en cada llamada, de modo que todos los intentos de una misma solicitud se pueden correlacionar en el lado del proveedor.
 
 ### Rate limit hacia el proveedor
 
@@ -178,7 +180,7 @@ Preferí esto a capturar errores en cada endpoint porque varios endpoints compar
 
 ### Cliente del proveedor
 
-El cliente del proveedor es un adaptador fino cuya única responsabilidad es hablar con él y traducir sus respuestas a algo que el resto de la aplicación entienda (o un envío correcto, o un error con información suficiente para decidir qué hacer). No reintenta ni decide el estado final de la solicitud, eso es responsibilidad del servicio.
+El cliente del proveedor es un adaptador fino cuya única responsabilidad es hablar con él y traducir sus respuestas a algo que el resto de la aplicación entienda (o un envío correcto, o un error con información suficiente para decidir qué hacer). No reintenta ni decide el estado final de la solicitud, eso es responsabilidad del servicio. Envía el id de la solicitud como `trace_id` y devuelve el `provider_id` de la respuesta, que el servicio guarda junto a la solicitud para poder cruzar ambos lados.
 
 Reutiliza una única conexión HTTP para todas las llamadas, porque abrir una conexión nueva por notificación sería un desperdicio bajo carga, y aplica un timeout para que una llamada colgada no bloquee a un worker indefinidamente.
 
@@ -207,7 +209,7 @@ Todo lo que puede variar entre entornos se lee de variables de entorno, así se 
 
 **Seguridad.** La API key del proveedor no está en el código sino en la configuración. Para la prueba tiene un valor por defecto, pero en un entorno real no lo tendría y vendría de un gestor de secretos. Los logs identifican las solicitudes solo por su `id` y no incluyen el destinatario ni el mensaje, para no dejar datos personales en ellos. Los cuerpos de entrada se validan con Pydantic, y el tipo de notificación se restringe a los valores permitidos.
 
-**Observabilidad.** Cada intento de entrega y su resultado quedan en los logs, lo que me permitió entender qué pasaba durante el test de carga con `docker-compose logs app`.
+**Observabilidad.** Cada intento de entrega y su resultado quedan en los logs, junto con el `provider_id` de las entregas correctas. El logger `notifications` tiene su propio handler porque uvicorn solo configura los suyos y, sin él, los mensajes `INFO` se descartarían. Esto me permitió entender qué pasaba durante el test de carga con `docker-compose logs app`.
 
 **Mantenibilidad y testabilidad.** Cada pieza recibe sus dependencias desde fuera, lo que permite probarla aislada: el proveedor se simula, los reintentos se configuran sin esperas y el limitador usa un reloj falso, de modo que los tests son rápidos y deterministas. La CI ejecuta los tests y construye la imagen en cada pull request.
 
@@ -221,7 +223,8 @@ Eso no significa que todas las notificaciones estén enviadas al terminar k6. Co
 
 - **Estado en memoria.** Un reinicio pierde las solicitudes y las entregas pendientes. El siguiente paso sería un almacén persistente y una cola externa.
 - **Cola sin límite.** Bajo una carga sostenida mayor que la que admite el proveedor, la cola crece sin tope. En producción la limitaría y respondería `503` cuando estuviera llena, para que el cliente sepa que debe reintentar más tarde en lugar de acumular trabajo que no se va a poder atender.
-- **Errores inesperados en el worker.** Si un error que no viene del proveedor interrumpe una entrega, el worker sigue vivo pero esa solicitud se queda en `processing`. Lo ideal sería marcarla como `failed` o devolverla a la cola.
+- **Duplicados ante timeouts.** Un reintento tras un timeout puede duplicar una notificación que el proveedor sí entregó. El `trace_id` permite detectarlo, pero evitarlo requeriría que el proveedor ofreciera idempotencia.
+- **Apagado sin drenaje.** Al parar la aplicación se cancelan los workers, y las solicitudes que estaban en la cola o a mitad de entrega se quedan en `processing`.
 - **Validación de entrada.** El destinatario y el mensaje se aceptan como texto libre. Validaría el formato del destinatario según el tipo (email, teléfono, token push) y limitaría la longitud del mensaje.
 - **Sin idempotencia en el registro.** Si un cliente repite el `POST /v1/requests` por un timeout, se crean dos solicitudes. Una clave de idempotencia lo evitaría.
 - **Sin autenticación de clientes.** La API es abierta, como pide el contrato, pero en un entorno real necesitaría autenticación y un rate limit propio por cliente.
