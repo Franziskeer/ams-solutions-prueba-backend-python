@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Visión general del servicio de notificaciones",
+    "output": "vision-general.html",
+    "quality_profile": "showcase",
+    "viewBox": [1270, 560]
+  },
+  "components": [
+    { "id": "cliente", "type": "external", "label": "Cliente", "sublabel": "HTTP", "pos": [30, 260], "size": [120, 56] },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "acepta y consulta", "pos": [230, 260], "size": [140, 56] },
+    { "id": "almacen", "type": "database", "label": "Solicitudes", "sublabel": "estado en memoria", "pos": [440, 100], "size": [140, 56] },
+    { "id": "cola", "type": "messagebus", "label": "Cola de envío", "sublabel": "en memoria", "pos": [440, 260], "size": [140, 56] },
+    { "id": "workers", "type": "backend", "label": "Workers", "sublabel": "segundo plano", "pos": [650, 260], "size": [140, 56] },
+    { "id": "reintentos", "type": "backend", "label": "Reintentos", "sublabel": "backoff con jitter", "pos": [650, 420], "size": [140, 56] },
+    { "id": "limitador", "type": "security", "label": "Rate limit", "sublabel": "45 cada 10 s", "pos": [850, 420], "size": [140, 56] },
+    { "id": "proveedor", "type": "external", "label": "Proveedor", "sublabel": "50 cada 10 s", "pos": [1120, 420], "size": [120, 56] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Servicio de notificaciones", "wraps": ["api", "almacen", "cola", "workers", "reintentos", "limitador"] }
+  ],
+  "connections": [
+    { "id": "cliente-api", "from": "cliente", "to": "api", "label": "POST /process", "variant": "emphasis" },
+    { "id": "api-cliente", "from": "api", "to": "cliente", "label": "202 Accepted", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom" },
+    { "id": "api-almacen", "from": "api", "to": "almacen", "label": "marca processing", "fromSide": "top", "toSide": "left" },
+    { "id": "api-cola", "from": "api", "to": "cola", "label": "encola id", "variant": "emphasis" },
+    { "id": "cola-workers", "from": "cola", "to": "workers", "variant": "emphasis" },
+    { "id": "workers-almacen", "from": "workers", "to": "almacen", "label": "sent / failed", "fromSide": "top", "toSide": "right" },
+    { "id": "workers-reintentos", "from": "workers", "to": "reintentos", "label": "entrega", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelDy": 24 },
+    { "id": "reintentos-limitador", "from": "reintentos", "to": "limitador", "variant": "emphasis" },
+    { "id": "limitador-proveedor", "from": "limitador", "to": "proveedor", "label": "POST /v1/notify", "variant": "emphasis" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Aceptar", "items": ["Valida, marca processing y encola", "Responde 202 sin esperar al proveedor"] },
+    { "dot": "emerald", "title": "Entregar", "items": ["Workers en segundo plano consumen la cola", "El resultado final queda en sent o failed"] },
+    { "dot": "amber", "title": "Proteger al proveedor", "items": ["Solo se reintentan los fallos pasajeros", "Nunca más de 45 llamadas cada 10 s"] }
+  ]
+}
