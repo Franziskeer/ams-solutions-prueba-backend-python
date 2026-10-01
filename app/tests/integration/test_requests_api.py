@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -114,3 +116,15 @@ async def test_process_request_returns_409_when_not_queued(client, api):
 
     assert response.status_code == 409
     assert response.json() == {"detail": f"Request {request_id} is not processable"}
+
+
+async def test_concurrent_process_requests_enqueue_only_once(client, api):
+    _repository, queue, _workers = api
+    request_id = (await client.post("/v1/requests", json=VALID_BODY)).json()["id"]
+
+    responses = await asyncio.gather(
+        *(client.post(f"/v1/requests/{request_id}/process") for _ in range(10))
+    )
+
+    assert sorted(r.status_code for r in responses) == [202] + [409] * 9
+    assert queue.qsize() == 1

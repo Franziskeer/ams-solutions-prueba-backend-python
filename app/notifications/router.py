@@ -53,7 +53,7 @@ async def create_request(
         status.HTTP_409_CONFLICT: {"description": "Request is not processable"},
     },
 )
-def process_request(request_id: str, service: Service) -> None:
+async def process_request(request_id: str, service: Service) -> None:
     service.process(request_id)
 
 
