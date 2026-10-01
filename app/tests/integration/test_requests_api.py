@@ -48,3 +48,19 @@ async def test_create_request_rejects_invalid_body_with_422(client, repository, 
     response = await client.post("/v1/requests", json=body)
 
     assert response.status_code == 422
+
+
+async def test_get_request_returns_id_and_queued_status(client, repository):
+    request_id = (await client.post("/v1/requests", json=VALID_BODY)).json()["id"]
+
+    response = await client.get(f"/v1/requests/{request_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"id": request_id, "status": "queued"}
+
+
+async def test_get_request_returns_404_for_unknown_id(client, repository):
+    response = await client.get("/v1/requests/missing")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Request missing not found"}
