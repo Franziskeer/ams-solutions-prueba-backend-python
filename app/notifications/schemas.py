@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from notifications.models import NotificationType
+from notifications.models import NotificationType, NotificationStatus
 
 
 class NotificationRequest(BaseModel):
@@ -11,3 +11,8 @@ class NotificationRequest(BaseModel):
 
 class NotificationCreatedResponse(BaseModel):
     id: str
+
+
+class NotificationStatusResponse(BaseModel):
+    id: str
+    status: NotificationStatus
