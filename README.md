@@ -95,12 +95,12 @@ stateDiagram-v2
     [*] --> queued: POST /v1/requests
     queued --> processing: POST /v1/requests/{id}/process
     processing --> sent: el proveedor responde 200
-    processing --> failed: error no recuperable o reintentos agotados
+    processing --> failed: ProviderError (sin reintentos aún)
     sent --> [*]
     failed --> [*]
 ```
 
-Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro ya crea las solicitudes en `queued`; el resto de transiciones llegan con el procesamiento.
+Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro crea las solicitudes en `queued`. El procesamiento avanza a `processing` y termina en `sent` o `failed`.
 
 ### Almacén de solicitudes
 
@@ -110,7 +110,9 @@ El almacén tampoco sobrevive a un reinicio: al parar la app, o al recargar uvic
 
 ### Errores del dominio y códigos HTTP
 
-Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque varios endpoints buscan por `id`: el `GET` ya lo hace y `process` lo hará. Así cada endpoint se queda en llamar al servicio y devolver el resultado, y los errores que vengan después, como intentar procesar una solicitud ya enviada, seguirán el mismo camino.
+El servicio no sabe nada de HTTP. Cuando algo no cuadra, lanza una excepción propia del dominio: `NotificationNotFound` si el `id` no existe, y `NotificationNotProcessable` si se intenta procesar una solicitud que no está en `queued`. Traducirlas a códigos HTTP es trabajo de la capa web: `router.py` define los manejadores (`404` y `409`) y `main.py` los registra una sola vez con `app.add_exception_handler`.
+
+Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque varios endpoints buscan o validan por `id`. Así cada endpoint se queda en llamar al servicio y devolver el resultado.
 
 ### Configuración
 
