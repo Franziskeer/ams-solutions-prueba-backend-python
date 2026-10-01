@@ -1,6 +1,8 @@
+import pytest
+
 from notifications.models import NotificationStatus
 from notifications.repository import NotificationRepository
-from notifications.service import NotificationService
+from notifications.service import NotificationNotFound, NotificationService
 
 
 def test_create_stores_a_queued_notification():
@@ -23,3 +25,19 @@ def test_create_assigns_a_different_id_to_each_notification():
     second = service.create("user@example.com", "hola", "email")
 
     assert first.id != second.id
+
+
+def test_get_returns_the_stored_notification():
+    service = NotificationService(NotificationRepository())
+    created = service.create("user@example.com", "hola", "email")
+
+    assert service.get(created.id) is created
+
+
+def test_get_raises_not_found_for_unknown_id():
+    service = NotificationService(NotificationRepository())
+
+    with pytest.raises(NotificationNotFound) as exc_info:
+        service.get("missing")
+
+    assert exc_info.value.request_id == "missing"
