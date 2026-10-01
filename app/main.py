@@ -1,10 +1,13 @@
-﻿from fastapi import APIRouter, FastAPI
+﻿import logging
+from contextlib import asynccontextmanager
 
-from notifications.dependencies import get_delivery_workers, get_provider
+from fastapi import APIRouter, FastAPI
+
 from notifications import router as notifications_router
+from notifications.dependencies import get_delivery_workers, get_provider
 from notifications.service import NotificationNotFound, NotificationNotProcessable
 
-from contextlib import asynccontextmanager
+logging.getLogger("notifications").setLevel(logging.INFO)
 
 
 @asynccontextmanager
