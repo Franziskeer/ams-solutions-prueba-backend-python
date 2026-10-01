@@ -19,7 +19,9 @@ async def notify(handler) -> str:
 
 async def test_returns_provider_id_on_success():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"status": "delivered", "provider_id": "p-1234"})
+        return httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1234"}
+        )
 
     assert await notify(handler) == "p-1234"
 
@@ -29,7 +31,9 @@ async def test_sends_api_key_and_notification_body():
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        return httpx.Response(200, json={"status": "delivered", "provider_id": "p-1234"})
+        return httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1234"}
+        )
 
     await notify(handler)
 
@@ -69,3 +73,11 @@ async def test_raises_provider_error_without_status_code_on_transport_error(
         await notify(handler)
 
     assert exc_info.value.status_code is None
+
+
+@pytest.mark.parametrize(
+    ("status_code", "retryable"),
+    [(None, True), (429, True), (500, True), (401, False)],
+)
+def test_provider_error_retryable(status_code, retryable):
+    assert ProviderError(status_code, "x").retryable is retryable

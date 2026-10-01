@@ -97,12 +97,22 @@ stateDiagram-v2
     [*] --> queued: POST /v1/requests
     queued --> processing: POST /v1/requests/{id}/process
     processing --> sent: worker deliver, provider 200
-    processing --> failed: worker deliver, ProviderError
+    processing --> failed: worker deliver, agota reintentos o error no recuperable
     sent --> [*]
     failed --> [*]
 ```
 
 Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro crea las solicitudes en `queued`. `POST .../process` solo las acepta y las deja en `processing` (aceptadas para envío, aunque aún esperen en cola). Un worker en segundo plano llama a `deliver` y termina en `sent` o `failed`.
+
+### Reintentos ante errores del proveedor
+
+El proveedor falla de forma recuperable: un 10 % de `500` al azar, `429` si se supera su rate limit, y a veces errores de red. Marcar `failed` a la primera dejaba muchas notificaciones perdidas sin necesidad.
+
+`ProviderError.retryable` clasifica qué se puede reintentar: `status_code is None` (red o timeout), `429` y `>= 500`. Un `401` no se reintenta: la API key está mal y repetir no ayuda.
+
+`service.deliver` envuelve la llamada al proveedor con `tenacity.AsyncRetrying`: hasta `RETRY_ATTEMPTS` intentos, esperando entre ellos con backoff exponencial y jitter (`RETRY_WAIT_INITIAL` → `RETRY_WAIT_MAX`). El jitter evita que todos los workers reintenten a la vez tras un pico de `429`. Si agota los intentos, o el error no es recuperable, la solicitud queda en `failed`.
+
+La política vive en el servicio (orquestación), no en `provider.py`, que solo traduce HTTP a `ProviderError`. Los parámetros se leen de `config.py` para poder ajustarlos sin tocar código.
 
 ### Envío en segundo plano
 
@@ -131,13 +141,18 @@ Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque
 
 ### Configuración
 
-`config.py` lee del entorno la URL y la API key del proveedor, y cuántos workers de entrega arrancar. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real la API key se consideraría información sensible y habría que protegerla con variables de entorno o almacenes seguros.
+`config.py` lee del entorno la URL y la API key del proveedor, cuántos workers de entrega arrancar y la política de reintentos. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real la API key se consideraría información sensible y habría que protegerla con variables de entorno o almacenes seguros.
 
-| Variable            | Valor por defecto       |
-| ------------------- | ----------------------- |
-| `PROVIDER_BASE_URL` | `http://localhost:3001` |
-| `PROVIDER_API_KEY`  | `test-dev-2026`         |
-| `DELIVERY_WORKERS`  | `10`                    |
+| Variable             | Valor por defecto       | Notas                                                                                                                                      |
+| -------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROVIDER_BASE_URL`  | `http://localhost:3001` | URL del proveedor en la red local / Docker.                                                                                                |
+| `PROVIDER_API_KEY`   | `test-dev-2026`         | Clave que exige el proveedor de la prueba.                                                                                                 |
+| `DELIVERY_WORKERS`   | `10`                    | Tareas asyncio concurrentes consumiendo la cola; más workers no supera el rate limit del proveedor, solo reparte espera.                   |
+| `RETRY_ATTEMPTS`     | `5`                     | Con un 10 % de `500`, fallar 5 veces seguidas es muy improbable (~0,001 %); recupera fallos aleatorios sin alargar demasiado cada entrega. |
+| `RETRY_WAIT_INITIAL` | `0.5`                   | Del orden de la latencia del proveedor (0,1–0,5 s); no martillea al instante tras un `429`/`500`.                                          |
+| `RETRY_WAIT_MAX`     | `10`                    | Tope del backoff para no dejar un worker minutos esperando; coincide con la ventana de rate limit del proveedor (10 s).                    |
+
+**NOTA:** Los valores de reintentos y número de workers se han ajustado **porque en esta prueba tenemos acceso al código del proveedor** (latencia ~0,1–0,5 s, ~10 % fallos de cada `500`, rate limit de 50 llamadas / 10 s). En un entorno real es posible que no sepamos esos números de antemano así que para definirlos se podrían definir en base al comportamiento observado, con monitorización de los sistemas productivos o pruebas en entornos de staging. También se podrían adaptar según ya que al estar configurados en variables de entorno no es necesario hacer nuevos deploys.
 
 ### Cliente del proveedor
 
@@ -146,4 +161,4 @@ Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque
 - Usa un único `httpx.AsyncClient` por instancia para reutilizar conexiones bajo carga.
 - Devuelve el `provider_id` cuando la respuesta es 200.
 - Cualquier otro resultado lanza `ProviderError`: los 401, 429 y 500 con su código HTTP, y los errores de red o el timeout de 5 segundos con `status_code=None`.
-- No reintenta ni decide el estado final de la solicitud. Esa responsabilidad queda en `service.deliver`, que ejecutan los workers en segundo plano.
+- `ProviderError.retryable` indica si el fallo merece reintento; el adaptador no reintenta ni decide el estado final. Eso lo hace `service.deliver` con tenacity.

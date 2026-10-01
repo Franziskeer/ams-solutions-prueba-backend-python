@@ -8,6 +8,14 @@ class ProviderError(Exception):
         super().__init__(detail)
         self.status_code = status_code
 
+    @property
+    def retryable(self) -> bool:
+        return (
+            self.status_code is None
+            or self.status_code == 429
+            or self.status_code >= 500
+        )
+
 
 class ProviderClient:
     def __init__(
