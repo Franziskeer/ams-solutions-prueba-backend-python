@@ -1,8 +1,15 @@
 import httpx
 import pytest
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_none,
+)
 
+from config import settings
 from notifications.models import NotificationStatus
-from notifications.provider import ProviderClient
+from notifications.provider import ProviderClient, ProviderError
 from notifications.queue import DeliveryQueue
 from notifications.repository import NotificationRepository
 from notifications.service import (
@@ -12,26 +19,46 @@ from notifications.service import (
 )
 
 
+def _fast_retrying(attempts: int | None = None) -> AsyncRetrying:
+    return AsyncRetrying(
+        retry=retry_if_exception(
+            lambda e: isinstance(e, ProviderError) and e.retryable
+        ),
+        stop=stop_after_attempt(attempts or settings.retry_attempts),
+        wait=wait_none(),
+        reraise=True,
+    )
+
+
 def _service(
     repository: NotificationRepository | None = None,
     queue: DeliveryQueue | None = None,
     *,
     status_code: int = 200,
+    status_codes: list[int] | None = None,
     calls: list[httpx.Request] | None = None,
+    retry_attempts: int | None = None,
 ) -> NotificationService:
+    remaining = list(status_codes) if status_codes is not None else None
+
     def handler(request: httpx.Request) -> httpx.Response:
         if calls is not None:
             calls.append(request)
-        if status_code == 200:
+        if remaining is not None:
+            code = remaining.pop(0) if remaining else status_codes[-1]
+        else:
+            code = status_code
+        if code == 200:
             return httpx.Response(
                 200, json={"status": "delivered", "provider_id": "p-1"}
             )
-        return httpx.Response(status_code, json={"detail": "error"})
+        return httpx.Response(code, json={"detail": "error"})
 
     return NotificationService(
         repository or NotificationRepository(),
         ProviderClient(transport=httpx.MockTransport(handler)),
         queue or DeliveryQueue(),
+        retrying=_fast_retrying(retry_attempts),
     )
 
 
@@ -122,6 +149,46 @@ async def test_deliver_marks_notification_as_failed_on_provider_error():
     delivered = await service.deliver(created.id)
 
     assert delivered.status == NotificationStatus.FAILED
+
+
+@pytest.mark.anyio
+async def test_deliver_retries_retryable_error_then_succeeds():
+    calls: list[httpx.Request] = []
+    service = _service(status_codes=[500, 200], calls=calls)
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.SENT
+    assert len(calls) == 2
+
+
+@pytest.mark.anyio
+async def test_deliver_does_not_retry_non_retryable_error():
+    calls: list[httpx.Request] = []
+    service = _service(status_code=401, calls=calls)
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.FAILED
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_deliver_fails_after_retry_attempts_are_exhausted():
+    calls: list[httpx.Request] = []
+    attempts = 3
+    service = _service(status_code=500, calls=calls, retry_attempts=attempts)
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.FAILED
+    assert len(calls) == attempts
 
 
 @pytest.mark.anyio

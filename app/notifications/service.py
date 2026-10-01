@@ -1,9 +1,16 @@
 from uuid import uuid4
 
+from config import settings
 from notifications.queue import DeliveryQueue
 from notifications.models import Notification, NotificationStatus, NotificationType
 from notifications.provider import ProviderClient, ProviderError
 from notifications.repository import NotificationRepository
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 
 class NotificationNotFound(Exception):
@@ -24,10 +31,22 @@ class NotificationService:
         repository: NotificationRepository,
         provider: ProviderClient,
         queue: DeliveryQueue,
+        *,
+        retrying: AsyncRetrying | None = None,
     ) -> None:
         self._repository = repository
         self._provider = provider
         self._queue = queue
+        self._retrying = retrying or AsyncRetrying(
+            retry=retry_if_exception(
+                lambda e: isinstance(e, ProviderError) and e.retryable
+            ),
+            stop=stop_after_attempt(settings.retry_attempts),
+            wait=wait_exponential_jitter(
+                initial=settings.retry_wait_initial, max=settings.retry_wait_max
+            ),
+            reraise=True,
+        )
 
     def create(self, to: str, message: str, type: NotificationType) -> Notification:
         notification = Notification(id=str(uuid4()), to=to, message=message, type=type)
@@ -50,9 +69,11 @@ class NotificationService:
     async def deliver(self, request_id: str) -> Notification:
         notification = self.get(request_id)
         try:
-            await self._provider.notify(
-                notification.to, notification.message, notification.type
-            )
+            async for attempt in self._retrying:
+                with attempt:
+                    await self._provider.notify(
+                        notification.to, notification.message, notification.type
+                    )
             notification.status = NotificationStatus.SENT
         except ProviderError:
             notification.status = NotificationStatus.FAILED

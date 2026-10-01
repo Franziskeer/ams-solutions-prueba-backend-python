@@ -1,8 +1,15 @@
 import httpx
 import pytest
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_none,
+)
 
+from config import settings
 from notifications.models import NotificationStatus
-from notifications.provider import ProviderClient
+from notifications.provider import ProviderClient, ProviderError
 from notifications.queue import DeliveryQueue
 from notifications.repository import NotificationRepository
 from notifications.service import NotificationService
@@ -28,6 +35,14 @@ def _service(
         repository or NotificationRepository(),
         ProviderClient(transport=httpx.MockTransport(handler)),
         queue or DeliveryQueue(),
+        retrying=AsyncRetrying(
+            retry=retry_if_exception(
+                lambda e: isinstance(e, ProviderError) and e.retryable
+            ),
+            stop=stop_after_attempt(settings.retry_attempts),
+            wait=wait_none(),
+            reraise=True,
+        ),
     )
 
 
