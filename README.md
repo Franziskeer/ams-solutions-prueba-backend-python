@@ -215,9 +215,13 @@ Todo lo que puede variar entre entornos se lee de variables de entorno, así se 
 
 ## Resultados del test de carga
 
-Con el pipeline completo (cola y workers, reintentos y rate limit), una pasada de k6 (hasta 200 usuarios virtuales, unos 40 segundos) dejó los checks al 100% y la tasa de peticiones fallidas al 0%. La latencia media de la API fue de unos 2–3 ms, porque procesar una solicitud responde `202` sin esperar al proveedor.
+Con el pipeline completo (cola y workers, reintentos y rate limit), una pasada de k6 (hasta 200 usuarios virtuales, unos 40 segundos y algo más de 8.200 peticiones) dejó los checks al 100% y la tasa de peticiones fallidas al 0%. La latencia media de la API fue de unos 2 ms, con un p95 por debajo de 5 ms, porque procesar una solicitud responde `202` sin esperar al proveedor.
+
+![Scorecard de Grafana tras una pasada de k6: disponibilidad del 100% e indicador de arquitectura ASYNC](docs/load-test/grafana-scorecard.png)
 
 Eso no significa que todas las notificaciones estén enviadas al terminar k6. Como el proveedor admite unas 5 llamadas por segundo y k6 encola mucho más rápido, al acabar la prueba la mayoría sigue en `processing`, esperando su turno en la cola. Es el comportamiento esperado, y el check de k6 solo exige que el estado sea válido. En los logs del proveedor no aparecieron rechazos por saturación (sí algunos errores 500 aleatorios, que los reintentos absorbieron), lo que confirma que el rate limit propio cumple su función.
+
+Cruzar los logs de la aplicación con los del proveedor sirvió además para encontrar un error que los tests no detectaban. Los workers compartían una única instancia de `AsyncRetrying`, y `tenacity` guarda en ella el estado del reintento, así que cada entrega que empezaba reiniciaba el estado de las que ya estaban en curso. Un worker cuyo envío había ido bien no salía del bucle y volvía a enviar: en una pasada, 59 solicitudes generaron 249 envíos correctos en el proveedor. Ahora cada entrega usa su propia copia de la política de reintentos, hay un test que lanza entregas concurrentes y comprueba que el proveedor recibe una llamada por solicitud, y en la siguiente pasada ninguna solicitud se envió más de una vez.
 
 ## Limitaciones conocidas y siguientes pasos
 
