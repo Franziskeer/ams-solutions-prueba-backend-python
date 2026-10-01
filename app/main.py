@@ -7,7 +7,22 @@ from notifications import router as notifications_router
 from notifications.dependencies import get_delivery_workers, get_provider
 from notifications.service import NotificationNotFound, NotificationNotProcessable
 
-logging.getLogger("notifications").setLevel(logging.INFO)
+
+def configure_logging() -> None:
+    # uvicorn only configures its own loggers; without a handler, INFO records are dropped.
+    logger = logging.getLogger("notifications")
+    if logger.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s")
+    )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
+configure_logging()
 
 
 @asynccontextmanager
