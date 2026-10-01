@@ -50,6 +50,7 @@ Los tests viven en `app/tests/`, junto al código que prueban, para que la soluc
 
 - `tests/conftest.py` es común a todas las subcarpetas.
 - `tests/unit/` prueba cada pieza aislada. No necesita el proveedor levantado: sus respuestas se simulan con `httpx.MockTransport`.
+- `tests/integration/` prueba los endpoints de punta a punta dentro de la app: llama a la app en memoria con `httpx.ASGITransport`, sin levantar un servidor, y sustituye la dependencia del servicio con `app.dependency_overrides` para que cada test parta de un repositorio vacío.
 
 Cada carpeta de tests lleva un `__init__.py` vacío para que pytest las importe como paquetes y se puedan repetir nombres de fichero entre `unit/` y otras subcarpetas.
 
@@ -66,14 +67,29 @@ app/
   main.py               # crea la app FastAPI y monta los routers bajo /v1
   config.py             # configuración leída del entorno
   notifications/
-    router.py           # endpoints de /v1/requests
+    router.py           # endpoints de /v1/requests; solo traduce HTTP
+    schemas.py          # cuerpos de entrada y de respuesta de la API
+    models.py           # la solicitud guardada y sus estados
+    service.py          # reglas de negocio: crear, procesar y consultar
+    repository.py       # almacén de solicitudes
+    dependencies.py     # instancias compartidas que FastAPI inyecta en el router
     provider.py         # cliente del proveedor externo
   tests/                # tests con pytest, excluidos de la imagen
     conftest.py
     unit/
+    integration/
 ```
 
 El código se agrupa por dominio y no por capas. Todo lo que tiene que ver con las notificaciones vive junto, y un dominio nuevo sería otra carpeta al mismo nivel.
+
+`schemas.py` y `models.py` están separados a propósito: los esquemas son el contrato HTTP, validado por Pydantic, y los modelos son lo que la app guarda. Así el estado interno de una solicitud puede cambiar sin tocar el contrato.
+
+### Registro de solicitudes
+
+- `POST /v1/requests` valida el cuerpo, crea la solicitud con un `id` `uuid4` y estado `queued`, y responde `201` con `{"id": "..."}`. Un cuerpo inválido, por ejemplo un `type` que no sea `email`, `sms` o `push`, devuelve `422` sin llegar al servicio.
+- El router recibe el servicio con `Depends(get_notification_service)`. El repositorio se crea una sola vez en `dependencies.py` y lo comparten todas las peticiones, de modo que lo que guarda un `POST` lo encuentra después el `GET`.
+- El almacén es un diccionario en memoria. Basta porque el Dockerfile arranca un solo proceso de uvicorn; con varios workers, cada uno tendría su propio diccionario. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
+- No hay locks: en asyncio, una operación sin `await` entre leer y escribir el diccionario no puede quedar interrumpida por otra petición.
 
 ### Configuración
 

@@ -1,20 +1,20 @@
-from typing import Literal
+from typing import Annotated
 
-from fastapi import APIRouter, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, status
+
+from notifications.dependencies import get_notification_service
+from notifications.schemas import NotificationCreated, NotificationRequest
+from notifications.service import NotificationService
 
 router = APIRouter(prefix="/requests", tags=["Notifications Requests"])
 
-
-class NotificationRequest(BaseModel):
-    to: str
-    message: str
-    type: Literal["email", "sms", "push"]
+Service = Annotated[NotificationService, Depends(get_notification_service)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_request(body: NotificationRequest) -> dict:
-    return {}
+async def create_request(body: NotificationRequest, service: Service) -> NotificationCreated:
+    notification = service.create(body.to, body.message, body.type)
+    return NotificationCreated(id=notification.id)
 
 
 @router.post("/{request_id}/process", status_code=status.HTTP_202_ACCEPTED)
