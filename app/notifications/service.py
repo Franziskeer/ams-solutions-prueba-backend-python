@@ -1,4 +1,5 @@
 from uuid import uuid4
+import logging
 
 from config import settings
 from notifications.queue import DeliveryQueue
@@ -11,6 +12,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential_jitter,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationNotFound(Exception):
@@ -71,12 +74,24 @@ class NotificationService:
         try:
             async for attempt in self._retrying:
                 with attempt:
+                    logger.info(
+                        "Delivering notification %s (attempt %s)",
+                        request_id,
+                        attempt.retry_state.attempt_number,
+                    )
                     await self._provider.notify(
                         notification.to, notification.message, notification.type
                     )
             notification.status = NotificationStatus.SENT
-        except ProviderError:
+            logger.info("Notification %s sent", request_id)
+        except ProviderError as exc:
             notification.status = NotificationStatus.FAILED
+            logger.warning(
+                "Notification %s failed: %s (status_code=%s)",
+                request_id,
+                exc,
+                exc.status_code,
+            )
         return notification
 
     def process(self, request_id: str) -> Notification:
