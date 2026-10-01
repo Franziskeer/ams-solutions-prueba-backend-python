@@ -64,15 +64,17 @@ Cada carpeta de tests lleva un `__init__.py` vacío para que pytest las importe 
 
 ```text
 app/
-  main.py               # crea la app FastAPI y monta los routers bajo /v1
+  main.py               # crea la app FastAPI, monta routers y arranca los workers
   config.py             # configuración leída del entorno
   notifications/
     router.py           # endpoints de /v1/requests; solo traduce HTTP
     schemas.py          # cuerpos de entrada y de respuesta de la API
     models.py           # la solicitud guardada y sus estados
-    service.py          # reglas de negocio: crear, procesar y consultar
+    service.py          # reglas de negocio: crear, aceptar, entregar y consultar
     repository.py       # almacén de solicitudes
-    dependencies.py     # instancias compartidas que FastAPI inyecta en el router
+    queue.py            # cola en memoria de ids pendientes de envío
+    workers.py          # tareas asyncio que consumen la cola y llaman a deliver
+    dependencies.py     # instancias compartidas (servicio, cola, workers, provider)
     provider.py         # cliente del proveedor externo
   tests/                # tests con pytest, excluidos de la imagen
     conftest.py
@@ -94,17 +96,30 @@ Por eso cada solicitud es una pequeña máquina de estados en lugar de un simple
 stateDiagram-v2
     [*] --> queued: POST /v1/requests
     queued --> processing: POST /v1/requests/{id}/process
-    processing --> sent: el proveedor responde 200
-    processing --> failed: ProviderError (sin reintentos aún)
+    processing --> sent: worker deliver, provider 200
+    processing --> failed: worker deliver, ProviderError
     sent --> [*]
     failed --> [*]
 ```
 
-Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro crea las solicitudes en `queued`. El procesamiento avanza a `processing` y termina en `sent` o `failed`.
+Los valores los fija el enunciado; la semántica y las transiciones son decisión de diseño. El registro crea las solicitudes en `queued`. `POST .../process` solo las acepta y las deja en `processing` (aceptadas para envío, aunque aún esperen en cola). Un worker en segundo plano llama a `deliver` y termina en `sent` o `failed`.
+
+### Envío en segundo plano
+
+El proveedor tarda un tiempo determinado en responder. Si `POST /v1/requests/{id}/process` esperara a ese envío, bajo la carga de k6 (cientos de usuarios virtuales) la API se saturaría debido a la latencia alta y fallos en el endpoint, aunque el trabajo lento sea del proveedor. El contrato ya admite `202 Accepted` y un `GET` de estado precisamente para no atar al cliente al envío.
+
+Por eso el procesamiento se parte en dos:
+
+- **Aceptar la petición y encolarla:** se valida si se está intentando procesar algo que ya no está encolado para evitar encolar dos veces y mandar duplicados. Se pasa la solicitud a `processing` y se encola el `id`. Responde `202` al momento, sin llamar al proveedor.
+- **Consumir la cola:** la aplicación instancia N workers que se encargan de hablar con el proveedor y dejar la solicitud en `sent` o `failed`. Si algo inesperado falla, el worker lo registra y sigue con el siguiente `id` sin detenerse.
+
+Los workers no son otro proceso ni un broker, son tareas del mismo event loop de uvicorn, arrancadas y paradas en el `lifespan` de `main.py`. Así comparten el repositorio y la cola en memoria con los endpoints. Es concurrencia de I/O, mientras un worker espera la respuesta de la red el event loop puede atender nuevas peticiones y otros workers.
+
+Eso basta con un solo proceso de uvicorn, que es como arranca el Dockerfile. Si hubiera varios procesos o hubiera que sobrevivir a un reinicio, la cola tendría que ser externa (por ejemplo Redis), y al igual que con la persistencia, se modificaría solamente `queue.py` sin tocar el router.
 
 ### Almacén de solicitudes
 
-Las solicitudes se guardan en un diccionario en memoria, detrás de `repository.py`. Basta porque el Dockerfile arranca un solo proceso de uvicorn: con varios workers, cada uno tendría su propio diccionario y un `GET` podría no encontrar una solicitud creada en otro. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
+Las solicitudes se guardan en un diccionario en memoria, detrás de `repository.py`. Basta porque el Dockerfile arranca un solo proceso de uvicorn: con varios procesos de uvicorn, cada uno tendría su propio diccionario y un `GET` podría no encontrar una solicitud creada en otro. Para escalar a varios procesos habría que sustituir `repository.py` por un almacén compartido, como Redis, sin tocar el servicio ni el router.
 
 El almacén tampoco sobrevive a un reinicio: al parar la app, o al recargar uvicorn en desarrollo, se pierden todas las solicitudes. Es un compromiso asumido para la prueba, en la que cada ejecución de k6 crea sus propias solicitudes y no necesita las anteriores. Un almacén persistente lo resolvería con el mismo cambio de `repository.py`.
 
@@ -116,12 +131,13 @@ Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque
 
 ### Configuración
 
-`config.py` lee del entorno la URL y la API key del proveedor. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real se consideraría información sensible y habría que protegerlas con variables de entorno o almacenes seguros.
+`config.py` lee del entorno la URL y la API key del proveedor, y cuántos workers de entrega arrancar. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real la API key se consideraría información sensible y habría que protegerla con variables de entorno o almacenes seguros.
 
 | Variable            | Valor por defecto       |
 | ------------------- | ----------------------- |
 | `PROVIDER_BASE_URL` | `http://localhost:3001` |
 | `PROVIDER_API_KEY`  | `test-dev-2026`         |
+| `DELIVERY_WORKERS`  | `10`                    |
 
 ### Cliente del proveedor
 
@@ -130,4 +146,4 @@ Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque
 - Usa un único `httpx.AsyncClient` por instancia para reutilizar conexiones bajo carga.
 - Devuelve el `provider_id` cuando la respuesta es 200.
 - Cualquier otro resultado lanza `ProviderError`: los 401, 429 y 500 con su código HTTP, y los errores de red o el timeout de 5 segundos con `status_code=None`.
-- No reintenta ni decide el estado final de la solicitud. Esa responsabilidad queda fuera del adaptador, en la capa que orquesta el procesamiento.
+- No reintenta ni decide el estado final de la solicitud. Esa responsabilidad queda en `service.deliver`, que ejecutan los workers en segundo plano.
