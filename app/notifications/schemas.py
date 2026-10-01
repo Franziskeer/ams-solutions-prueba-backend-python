@@ -9,5 +9,5 @@ class NotificationRequest(BaseModel):
     type: NotificationType
 
 
-class NotificationCreated(BaseModel):
+class NotificationCreatedResponse(BaseModel):
     id: str
