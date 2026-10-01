@@ -74,6 +74,7 @@ app/
     repository.py       # almacén de solicitudes
     queue.py            # cola en memoria de ids pendientes de envío
     workers.py          # tareas asyncio que consumen la cola y llaman a deliver
+    rate_limiter.py     # ventana deslizante que frena las llamadas al proveedor
     dependencies.py     # instancias compartidas (servicio, cola, workers, provider)
     provider.py         # cliente del proveedor externo
   tests/                # tests con pytest, excluidos de la imagen
@@ -114,6 +115,12 @@ El proveedor falla de forma recuperable: un 10 % de `500` al azar, `429` si se s
 
 La política vive en el servicio (orquestación), no en `provider.py`, que solo traduce HTTP a `ProviderError`. Los parámetros se leen de `config.py` para poder ajustarlos sin tocar código.
 
+### Rate limit hacia el proveedor
+
+Bajo carga, la cola crece mucho más rápido de lo que el proveedor acepta (50 llamadas cada 10 segundos). Los reintentos no bastan ya que reaccionan al `429` cuando ya ha ocurrido y cada reintento es otra llamada contra el mismo límite.
+
+Se usa una ventana deslizante porque es el mismo algoritmo con el que cuenta el proveedor, así que los dos límites se miden igual. El margen de 45 sobre 50 cubre que la app apunta cada llamada al enviarla y el proveedor al recibirla, y que el limitador empieza vacío si la app se reinicia. El límite vive en `ProviderClient` y no en el servicio porque es una restricción del proveedor, y así ninguna llamada puede saltárselo.
+
 ### Envío en segundo plano
 
 El proveedor tarda un tiempo determinado en responder. Si `POST /v1/requests/{id}/process` esperara a ese envío, bajo la carga de k6 (cientos de usuarios virtuales) la API se saturaría debido a la latencia alta y fallos en el endpoint, aunque el trabajo lento sea del proveedor. El contrato ya admite `202 Accepted` y un `GET` de estado precisamente para no atar al cliente al envío.
@@ -141,24 +148,27 @@ Se usa un manejador global en lugar de un `try`/`except` en cada endpoint porque
 
 ### Configuración
 
-`config.py` lee del entorno la URL y la API key del proveedor, cuántos workers de entrega arrancar y la política de reintentos. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real la API key se consideraría información sensible y habría que protegerla con variables de entorno o almacenes seguros.
+`config.py` lee del entorno la URL y la API key del proveedor, cuántos workers de entrega arrancar, la política de reintentos y el rate limit hacia el proveedor. Para la prueba técnica se asumen usar los valores configurados como valores por defecto, pero en un entorno real la API key se consideraría información sensible y habría que protegerla con variables de entorno o almacenes seguros.
 
-| Variable             | Valor por defecto       | Notas                                                                                                                                      |
-| -------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PROVIDER_BASE_URL`  | `http://localhost:3001` | URL del proveedor en la red local / Docker.                                                                                                |
-| `PROVIDER_API_KEY`   | `test-dev-2026`         | Clave que exige el proveedor de la prueba.                                                                                                 |
-| `DELIVERY_WORKERS`   | `10`                    | Tareas asyncio concurrentes consumiendo la cola; más workers no supera el rate limit del proveedor, solo reparte espera.                   |
-| `RETRY_ATTEMPTS`     | `5`                     | Con un 10 % de `500`, fallar 5 veces seguidas es muy improbable (~0,001 %); recupera fallos aleatorios sin alargar demasiado cada entrega. |
-| `RETRY_WAIT_INITIAL` | `0.5`                   | Del orden de la latencia del proveedor (0,1–0,5 s); no martillea al instante tras un `429`/`500`.                                          |
-| `RETRY_WAIT_MAX`     | `10`                    | Tope del backoff para no dejar un worker minutos esperando; coincide con la ventana de rate limit del proveedor (10 s).                    |
+| Variable               | Valor por defecto       | Notas                                                                                                                                      |
+| ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PROVIDER_BASE_URL`    | `http://localhost:3001` | URL del proveedor en la red local / Docker.                                                                                                |
+| `PROVIDER_API_KEY`     | `test-dev-2026`         | Clave que exige el proveedor de la prueba.                                                                                                 |
+| `DELIVERY_WORKERS`     | `10`                    | Tareas asyncio concurrentes consumiendo la cola; más workers no supera el rate limit del proveedor, solo reparte espera.                   |
+| `RETRY_ATTEMPTS`       | `5`                     | Con un 10 % de `500`, fallar 5 veces seguidas es muy improbable (~0,001 %); recupera fallos aleatorios sin alargar demasiado cada entrega. |
+| `RETRY_WAIT_INITIAL`   | `0.5`                   | Del orden de la latencia del proveedor (0,1–0,5 s); no martillea al instante tras un `429`/`500`.                                          |
+| `RETRY_WAIT_MAX`       | `10`                    | Tope del backoff para no dejar un worker minutos esperando; coincide con la ventana de rate limit del proveedor (10 s).                    |
+| `PROVIDER_RATE_LIMIT`  | `45`                    | Máximo de llamadas al proveedor por ventana; margen bajo 50 para no rozar su límite.                                                       |
+| `PROVIDER_RATE_WINDOW` | `10`                    | Ventana en segundos del rate limit propio; alineada con la del proveedor.                                                                  |
 
-**NOTA:** Los valores de reintentos y número de workers se han ajustado **porque en esta prueba tenemos acceso al código del proveedor** (latencia ~0,1–0,5 s, ~10 % fallos de cada `500`, rate limit de 50 llamadas / 10 s). En un entorno real es posible que no sepamos esos números de antemano así que para definirlos se podrían definir en base al comportamiento observado, con monitorización de los sistemas productivos o pruebas en entornos de staging. También se podrían adaptar según ya que al estar configurados en variables de entorno no es necesario hacer nuevos deploys.
+**NOTA:** Los valores de reintentos, workers y rate limit se han ajustado **porque en esta prueba tenemos acceso al código del proveedor** (latencia ~0,1–0,5 s, ~10 % de `500`, rate limit de 50 llamadas / 10 s). En un entorno real es posible que no sepamos esos números de antemano así que para definirlos se podrían definir en base al comportamiento observado, con monitorización de los sistemas productivos o pruebas en entornos de staging. También se podrían adaptar según ya que al estar configurados en variables de entorno no es necesario hacer nuevos deploys.
 
 ### Cliente del proveedor
 
 `notifications/provider.py` es un adaptador sobre `POST /v1/notify`.
 
 - Usa un único `httpx.AsyncClient` por instancia para reutilizar conexiones bajo carga.
+- Antes de cada llamada HTTP aplica el rate limiter compartido (si está configurado).
 - Devuelve el `provider_id` cuando la respuesta es 200.
 - Cualquier otro resultado lanza `ProviderError`: los 401, 429 y 500 con su código HTTP, y los errores de red o el timeout de 5 segundos con `status_code=None`.
 - `ProviderError.retryable` indica si el fallo merece reintento; el adaptador no reintenta ni decide el estado final. Eso lo hace `service.deliver` con tenacity.
