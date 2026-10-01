@@ -192,6 +192,25 @@ async def test_deliver_fails_after_retry_attempts_are_exhausted():
 
 
 @pytest.mark.anyio
+async def test_deliver_marks_notification_as_failed_on_unexpected_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    service = NotificationService(
+        NotificationRepository(),
+        ProviderClient(transport=httpx.MockTransport(handler)),
+        DeliveryQueue(),
+        retrying=_fast_retrying(),
+    )
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.FAILED
+
+
+@pytest.mark.anyio
 async def test_process_accepts_and_enqueues_without_calling_provider():
     calls: list[httpx.Request] = []
     queue = DeliveryQueue()
