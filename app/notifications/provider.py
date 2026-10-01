@@ -32,14 +32,18 @@ class ProviderClient:
         )
         self._limiter = rate_limiter
 
-    async def notify(self, to: str, message: str, type: str) -> str:
+    async def notify(
+        self, to: str, message: str, type: str, trace_id: str | None = None
+    ) -> str:
         if self._limiter is not None:
             await self._limiter.acquire()
 
+        params = {"trace_id": trace_id} if trace_id is not None else None
         try:
             response = await self._client.post(
                 "/v1/notify",
                 json={"to": to, "message": message, "type": type},
+                params=params,
             )
         except httpx.HTTPError as exc:
             raise ProviderError(None, str(exc)) from exc

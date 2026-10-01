@@ -79,11 +79,17 @@ class NotificationService:
                         request_id,
                         attempt.retry_state.attempt_number,
                     )
-                    await self._provider.notify(
-                        notification.to, notification.message, notification.type
+                    provider_id = await self._provider.notify(
+                        notification.to,
+                        notification.message,
+                        notification.type,
+                        trace_id=notification.id,
                     )
+            notification.provider_id = provider_id
             notification.status = NotificationStatus.SENT
-            logger.info("Notification %s sent", request_id)
+            logger.info(
+                "Notification %s sent (provider_id=%s)", request_id, provider_id
+            )
         except ProviderError as exc:
             notification.status = NotificationStatus.FAILED
             logger.warning(
