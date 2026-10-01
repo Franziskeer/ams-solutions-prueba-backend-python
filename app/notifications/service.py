@@ -1,13 +1,19 @@
 from uuid import uuid4
 
 from notifications.models import Notification, NotificationStatus, NotificationType
-from notifications.provider import ProviderClient
+from notifications.provider import ProviderClient, ProviderError
 from notifications.repository import NotificationRepository
 
 
 class NotificationNotFound(Exception):
     def __init__(self, request_id: str) -> None:
         super().__init__(f"Notification with id {request_id} not found")
+        self.request_id = request_id
+
+
+class NotificationNotProcessable(Exception):
+    def __init__(self, request_id: str) -> None:
+        super().__init__(f"Notification with id {request_id} not processable")
         self.request_id = request_id
 
 
@@ -31,9 +37,14 @@ class NotificationService:
 
     async def process(self, request_id: str) -> Notification:
         notification = self.get(request_id)
+        if notification.status != NotificationStatus.QUEUED:
+            raise NotificationNotProcessable(request_id=request_id)
         notification.status = NotificationStatus.PROCESSING
-        await self._provider.notify(
-            notification.to, notification.message, notification.type
-        )
-        notification.status = NotificationStatus.SENT
+        try:
+            await self._provider.notify(
+                notification.to, notification.message, notification.type
+            )
+            notification.status = NotificationStatus.SENT
+        except ProviderError:
+            notification.status = NotificationStatus.FAILED
         return notification
