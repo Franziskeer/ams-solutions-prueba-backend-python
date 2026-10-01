@@ -70,6 +70,57 @@ def test_get_raises_not_found_for_unknown_id():
     assert exc_info.value.request_id == "missing"
 
 
+def test_accept_marks_notification_as_processing_without_calling_provider():
+    calls: list[httpx.Request] = []
+    service = _service(calls=calls)
+    created = service.create("user@example.com", "hola", "email")
+
+    accepted = service.accept(created.id)
+
+    assert accepted.status == NotificationStatus.PROCESSING
+    assert calls == []
+
+
+def test_accept_rejects_non_queued_notification():
+    service = _service()
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    with pytest.raises(NotificationNotProcessable) as exc_info:
+        service.accept(created.id)
+
+    assert exc_info.value.request_id == created.id
+
+
+def test_accept_raises_not_found_for_unknown_id():
+    service = _service()
+
+    with pytest.raises(NotificationNotFound):
+        service.accept("missing")
+
+
+@pytest.mark.anyio
+async def test_deliver_marks_notification_as_sent_on_provider_success():
+    service = _service()
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.SENT
+
+
+@pytest.mark.anyio
+async def test_deliver_marks_notification_as_failed_on_provider_error():
+    service = _service(status_code=500)
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert delivered.status == NotificationStatus.FAILED
+
+
 @pytest.mark.anyio
 async def test_process_marks_notification_as_sent_on_provider_success():
     service = _service()
