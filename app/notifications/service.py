@@ -35,11 +35,15 @@ class NotificationService:
             raise NotificationNotFound(request_id=request_id)
         return notification
 
-    async def process(self, request_id: str) -> Notification:
+    def accept(self, request_id: str) -> Notification:
         notification = self.get(request_id)
         if notification.status != NotificationStatus.QUEUED:
             raise NotificationNotProcessable(request_id=request_id)
         notification.status = NotificationStatus.PROCESSING
+        return notification
+
+    async def deliver(self, request_id: str) -> Notification:
+        notification = self.get(request_id)
         try:
             await self._provider.notify(
                 notification.to, notification.message, notification.type
@@ -48,3 +52,7 @@ class NotificationService:
         except ProviderError:
             notification.status = NotificationStatus.FAILED
         return notification
+
+    async def process(self, request_id: str) -> Notification:
+        self.accept(request_id)
+        return await self.deliver(request_id)
