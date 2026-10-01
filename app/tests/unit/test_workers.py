@@ -13,6 +13,7 @@ pytestmark = pytest.mark.anyio
 
 def _service(
     repository: NotificationRepository | None = None,
+    queue: DeliveryQueue | None = None,
     *,
     status_code: int = 200,
 ) -> NotificationService:
@@ -26,13 +27,14 @@ def _service(
     return NotificationService(
         repository or NotificationRepository(),
         ProviderClient(transport=httpx.MockTransport(handler)),
+        queue or DeliveryQueue(),
     )
 
 
 async def test_workers_deliver_queued_requests():
     repository = NotificationRepository()
-    service = _service(repository)
     queue = DeliveryQueue()
+    service = _service(repository, queue)
     workers = DeliveryWorkers(service, queue, count=2)
 
     first = service.create("user@example.com", "hola", "email")
@@ -52,8 +54,8 @@ async def test_workers_deliver_queued_requests():
 
 async def test_workers_keep_running_after_provider_error():
     repository = NotificationRepository()
-    service = _service(repository, status_code=500)
     queue = DeliveryQueue()
+    service = _service(repository, queue, status_code=500)
     workers = DeliveryWorkers(service, queue, count=1)
 
     first = service.create("user@example.com", "hola", "email")
