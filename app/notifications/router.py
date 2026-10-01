@@ -53,8 +53,8 @@ async def create_request(
         status.HTTP_409_CONFLICT: {"description": "Request is not processable"},
     },
 )
-async def process_request(request_id: str, service: Service) -> None:
-    await service.process(request_id)
+def process_request(request_id: str, service: Service) -> None:
+    service.process(request_id)
 
 
 @router.get(

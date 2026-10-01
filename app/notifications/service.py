@@ -1,5 +1,6 @@
 from uuid import uuid4
 
+from notifications.queue import DeliveryQueue
 from notifications.models import Notification, NotificationStatus, NotificationType
 from notifications.provider import ProviderClient, ProviderError
 from notifications.repository import NotificationRepository
@@ -19,10 +20,14 @@ class NotificationNotProcessable(Exception):
 
 class NotificationService:
     def __init__(
-        self, repository: NotificationRepository, provider: ProviderClient
+        self,
+        repository: NotificationRepository,
+        provider: ProviderClient,
+        queue: DeliveryQueue,
     ) -> None:
         self._repository = repository
         self._provider = provider
+        self._queue = queue
 
     def create(self, to: str, message: str, type: NotificationType) -> Notification:
         notification = Notification(id=str(uuid4()), to=to, message=message, type=type)
@@ -53,6 +58,7 @@ class NotificationService:
             notification.status = NotificationStatus.FAILED
         return notification
 
-    async def process(self, request_id: str) -> Notification:
-        self.accept(request_id)
-        return await self.deliver(request_id)
+    def process(self, request_id: str) -> Notification:
+        notification = self.accept(request_id)
+        self._queue.put(notification.id)
+        return notification

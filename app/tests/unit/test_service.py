@@ -3,6 +3,7 @@ import pytest
 
 from notifications.models import NotificationStatus
 from notifications.provider import ProviderClient
+from notifications.queue import DeliveryQueue
 from notifications.repository import NotificationRepository
 from notifications.service import (
     NotificationNotFound,
@@ -13,6 +14,7 @@ from notifications.service import (
 
 def _service(
     repository: NotificationRepository | None = None,
+    queue: DeliveryQueue | None = None,
     *,
     status_code: int = 200,
     calls: list[httpx.Request] | None = None,
@@ -29,6 +31,7 @@ def _service(
     return NotificationService(
         repository or NotificationRepository(),
         ProviderClient(transport=httpx.MockTransport(handler)),
+        queue or DeliveryQueue(),
     )
 
 
@@ -122,36 +125,29 @@ async def test_deliver_marks_notification_as_failed_on_provider_error():
 
 
 @pytest.mark.anyio
-async def test_process_marks_notification_as_sent_on_provider_success():
-    service = _service()
+async def test_process_accepts_and_enqueues_without_calling_provider():
+    calls: list[httpx.Request] = []
+    queue = DeliveryQueue()
+    service = _service(queue=queue, calls=calls)
     created = service.create("user@example.com", "hola", "email")
 
-    processed = await service.process(created.id)
+    processed = service.process(created.id)
 
-    assert processed.status == NotificationStatus.SENT
-    assert service.get(created.id).status == NotificationStatus.SENT
-
-
-@pytest.mark.anyio
-async def test_process_marks_notification_as_failed_on_provider_error():
-    service = _service(status_code=500)
-    created = service.create("user@example.com", "hola", "email")
-
-    processed = await service.process(created.id)
-
-    assert processed.status == NotificationStatus.FAILED
-    assert service.get(created.id).status == NotificationStatus.FAILED
+    assert processed.status == NotificationStatus.PROCESSING
+    assert service.get(created.id).status == NotificationStatus.PROCESSING
+    assert calls == []
+    assert await queue.get() == created.id
+    queue.task_done()
 
 
-@pytest.mark.anyio
-async def test_process_rejects_non_queued_notification_without_calling_provider():
+def test_process_rejects_non_queued_notification_without_calling_provider():
     calls: list[httpx.Request] = []
     service = _service(calls=calls)
     created = service.create("user@example.com", "hola", "email")
-    await service.process(created.id)
+    service.process(created.id)
 
     with pytest.raises(NotificationNotProcessable) as exc_info:
-        await service.process(created.id)
+        service.process(created.id)
 
     assert exc_info.value.request_id == created.id
-    assert len(calls) == 1
+    assert calls == []
