@@ -48,6 +48,24 @@ async def test_sends_api_key_and_notification_body():
     }
 
 
+async def test_sends_trace_id_as_query_param():
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1234"}
+        )
+
+    client = ProviderClient(transport=httpx.MockTransport(handler))
+    try:
+        await client.notify("user@example.com", "hola", "email", trace_id="req-1")
+    finally:
+        await client.aclose()
+
+    assert captured[0].url.params["trace_id"] == "req-1"
+
+
 @pytest.mark.parametrize("status_code", [401, 429, 500])
 async def test_raises_provider_error_with_status_code(status_code: int):
     def handler(request: httpx.Request) -> httpx.Response:

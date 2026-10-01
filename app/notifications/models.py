@@ -19,3 +19,4 @@ class Notification:
     message: str
     type: NotificationType
     status: NotificationStatus = NotificationStatus.QUEUED
+    provider_id: str | None = None

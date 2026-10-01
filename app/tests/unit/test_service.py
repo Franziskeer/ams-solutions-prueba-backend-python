@@ -141,6 +141,19 @@ async def test_deliver_marks_notification_as_sent_on_provider_success():
 
 
 @pytest.mark.anyio
+async def test_deliver_sends_request_id_as_trace_id_and_stores_provider_id():
+    calls: list[httpx.Request] = []
+    service = _service(calls=calls)
+    created = service.create("user@example.com", "hola", "email")
+    service.accept(created.id)
+
+    delivered = await service.deliver(created.id)
+
+    assert calls[0].url.params["trace_id"] == created.id
+    assert delivered.provider_id == "p-1"
+
+
+@pytest.mark.anyio
 async def test_deliver_marks_notification_as_failed_on_provider_error():
     service = _service(status_code=500)
     created = service.create("user@example.com", "hola", "email")
