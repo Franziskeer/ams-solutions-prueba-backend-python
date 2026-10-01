@@ -11,6 +11,9 @@ class DeliveryQueue:
     async def get(self) -> str:
         return await self._queue.get()
 
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
     async def join(self) -> None:
         await self._queue.join()
 
