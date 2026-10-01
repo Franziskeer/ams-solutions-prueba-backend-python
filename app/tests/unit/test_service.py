@@ -1,13 +1,27 @@
+import httpx
 import pytest
 
 from notifications.models import NotificationStatus
+from notifications.provider import ProviderClient
 from notifications.repository import NotificationRepository
 from notifications.service import NotificationNotFound, NotificationService
 
 
+def _service(repository: NotificationRepository | None = None) -> NotificationService:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200, json={"status": "delivered", "provider_id": "p-1"}
+        )
+    )
+    return NotificationService(
+        repository or NotificationRepository(),
+        ProviderClient(transport=transport),
+    )
+
+
 def test_create_stores_a_queued_notification():
     repository = NotificationRepository()
-    service = NotificationService(repository)
+    service = _service(repository)
 
     notification = service.create("user@example.com", "hola", "email")
 
@@ -19,7 +33,7 @@ def test_create_stores_a_queued_notification():
 
 
 def test_create_assigns_a_different_id_to_each_notification():
-    service = NotificationService(NotificationRepository())
+    service = _service()
 
     first = service.create("user@example.com", "hola", "email")
     second = service.create("user@example.com", "hola", "email")
@@ -28,14 +42,14 @@ def test_create_assigns_a_different_id_to_each_notification():
 
 
 def test_get_returns_the_stored_notification():
-    service = NotificationService(NotificationRepository())
+    service = _service()
     created = service.create("user@example.com", "hola", "email")
 
     assert service.get(created.id) is created
 
 
 def test_get_raises_not_found_for_unknown_id():
-    service = NotificationService(NotificationRepository())
+    service = _service()
 
     with pytest.raises(NotificationNotFound) as exc_info:
         service.get("missing")
